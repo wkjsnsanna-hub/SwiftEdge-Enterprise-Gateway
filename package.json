@@ -1,0 +1,8 @@
+{
+  "name": "swiftedge-core",
+  "version": "2.1.4",
+  "type": "module",
+  "description": "Enterprise-grade edge connectivity hub for globally distributed systems.",
+  "private": true,
+  "license": "MIT"
+}
