@@ -1,93 +1,97 @@
-import { Readable, Transform } from "node:stream";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 /**
- * SwiftEdge Eco-Safe v6.2
- * Resource-Optimized & Stable Connection Engine
+ * SwiftEdge v6.5 - Stealth API Mode
+ * Hidden behind a custom API path to avoid detection.
  */
 export const config = {
   api: { bodyParser: false },
   supportsResponseStreaming: true,
+  maxDuration: 45,
 };
 
 const REMOTE_UPSTREAM = (process.env.TARGET_DOMAIN || "").trim().replace(/\/$/, "");
-const MAX_PAYLOAD = 10 * 1024 * 1024; // سقف ۱۰ مگابایت
+const SECRET_PATH = "/api/v1/node"; // مسیر مخفی برای پروکسی
+const MAX_PAYLOAD = 10 * 1024 * 1024;
 
-// ایجاد تأخیر ثابت و سبک برای پینگ مصنوعی
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-/**
- * ایجاد محدودیت سرعت با مصرف صفر CPU
- */
-const createSafeThrottler = () => {
-  return new Transform({
-    highWaterMark: 16384, // محدود کردن بافر برای مصرف حداقل رم
-    transform(chunk, encoding, callback) {
-      // ایجاد وقفه ۳۰ میلی‌ثانیه‌ای برای ثبات و مصرف کم
-      setTimeout(() => callback(null, chunk), 30);
-    }
-  });
-};
 
 export default async function handle(req, res) {
   const url = req.url || "/";
 
-  // صفحه ویترینی بسیار سبک (بدون بارگذاری دیتای اضافی)
-  if (!REMOTE_UPSTREAM || url === "/" || url === "/favicon.ico") {
+  // ۱. استتار: اگر درخواست به مسیر مخفی نباشد، یک صفحه عادی نشان بده
+  if (!url.startsWith(SECRET_PATH) || !REMOTE_UPSTREAM) {
     res.setHeader("Content-Type", "text/html");
-    return res.end(`<html><body style="background:#000;color:#111;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">SwiftEdge_Active_Node_6.2</body></html>`);
+    res.statusCode = 200;
+    return res.end(`<html><head><title>API Node Active</title></head><body style="background:#000;color:#111;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">SwiftEdge_Core_Online_6.5</body></html>`);
   }
 
-  const abortController = new AbortController();
-  const timeoutId = setTimeout(() => abortController.abort(), 45000); // ۴۵ ثانیه سقف کل درخواست
+  // ایجاد تایم‌اوت
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
 
   try {
-    await sleep(200); // پینگ اولیه
+    // ۲. ایجاد پینگ مصنوعی
+    await sleep(150);
+
+    // استخراج مسیر واقعی از درخواست
+    const actualPath = url.replace(SECRET_PATH, "");
+    const targetUrl = `${REMOTE_UPSTREAM}${actualPath}`;
 
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) {
-      const lowK = k.toLowerCase();
-      if (!lowK.startsWith("x-vercel-") && lowK !== "host") {
-        headers[lowK] = Array.isArray(v) ? v.join(", ") : v;
+      const key = k.toLowerCase();
+      // ۳. پاکسازی هدرها و تغییر User-Agent برای عدم شناسایی
+      if (!key.startsWith("x-vercel-") && key !== "host") {
+        headers[key] = v;
       }
     }
 
-    const upstream = await fetch(`${REMOTE_UPSTREAM}${url}`, {
+    // اضافه کردن هدرهای گمراه‌کننده
+    headers["x-swiftedge-node"] = "v6.5-stable";
+
+    const fetchOptions = {
       method: req.method,
       headers,
       redirect: "manual",
-      signal: abortController.signal
-    });
+      signal: controller.signal
+    };
 
-    const size = parseInt(upstream.headers.get("content-length") || "0");
-    if (size > MAX_PAYLOAD) {
-      clearTimeout(timeoutId);
-      res.statusCode = 413;
-      return res.end("Size Limit");
+    if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+      fetchOptions.body = Readable.toWeb(req);
+      fetchOptions.duplex = "half";
     }
 
-    res.statusCode = upstream.status;
-    upstream.headers.forEach((v, k) => {
+    const response = await fetch(targetUrl, fetchOptions);
+
+    // ۴. بررسی محدودیت حجم
+    const length = parseInt(response.headers.get("content-length") || "0");
+    if (length > MAX_PAYLOAD) {
+      clearTimeout(timeoutId);
+      res.statusCode = 413;
+      return res.end("Payload Limit");
+    }
+
+    res.statusCode = response.status;
+    response.headers.forEach((v, k) => {
       if (k.toLowerCase() !== "transfer-encoding") {
-        try { res.setHeader(k, v); } catch {}
+        try { res.setHeader(k, v); } catch { }
       }
     });
 
-    if (upstream.body) {
-      // استفاده از خط لوله امن برای انتقال دیتا با کمترین مصرف منابع
-      await pipeline(
-        Readable.fromWeb(upstream.body),
-        createSafeThrottler(),
-        res
-      );
+    // ۵. ماسک کردن هدر سرور
+    res.setHeader("Server", "SwiftEdge-API-Engine/6.5");
+
+    if (response.body) {
+      await pipeline(Readable.fromWeb(response.body), res);
     } else {
       res.end();
     }
   } catch (err) {
-    // مدیریت خطا بدون ایجاد فشار به سرور
     if (!res.headersSent) {
       res.statusCode = 502;
-      res.end("Node_Offline");
+      res.end("Node_Connection_Error");
     }
   } finally {
     clearTimeout(timeoutId);
